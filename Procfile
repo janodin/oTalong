@@ -1,0 +1,1 @@
+web: gunicorn oTalong.wsgi --log-file -
