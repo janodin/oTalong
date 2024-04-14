@@ -63,11 +63,11 @@ def predict_image(request):
             threshold = 0.8  # Adjust based on validation results
 
             if max(healthy_prob, infected_prob) < threshold:
-                predicted_label = 'No matching images found'
+                predicted_label = 'No eggplant detected'
                 accuracy = 'N/A'
             else:
                 prediction = np.argmax(probabilities)
-                predicted_label = "Healthy" if prediction == 0 else "Phomopsis"
+                predicted_label = "Not Infected" if prediction == 0 else "Infected"
                 accuracy = max(healthy_prob, infected_prob)
 
             _, buffer = cv2.imencode('.jpg', img)
