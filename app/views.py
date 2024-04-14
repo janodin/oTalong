@@ -2,62 +2,75 @@ import base64
 import cv2
 import numpy as np
 from django.shortcuts import render
-from skimage.transform import resize
+from skimage.feature import local_binary_pattern
+import pickle
 
-def load_model(filename):
-    import pickle
-    # Load the model from the pickle file
-    with open(filename, 'rb') as f:
-        model = pickle.load(f)
-    return model
 
-# Load the trained model
-model = load_model('static/models.pkl')
+def load_model_and_scaler():
+    # Load the model and scaler from the pickle files
+    with open('static/models.pkl', 'rb') as f:
+        model_classifier = pickle.load(f)
+    with open('static/scaler.pkl', 'rb') as f:
+        scaler_classifier = pickle.load(f)
+    return model_classifier, scaler_classifier
 
-# List of class names your model can predict
-CATEGORIES = ['Healthy', 'Phomopsis']
 
-def preprocess(image):
-    # Resize and normalize the image
-    processed_img = resize(image, (128, 128, 3)) / 255.0
-    return processed_img
+# Load the trained model and scaler
+model, scaler = load_model_and_scaler()
 
-def extract_color_features(image):
-    # Initialize the list to store color features
-    color_features = []
 
-    # Iterate through each color channel (R, G, B)
-    for i in range(3):
-        channel = image[:, :, i]
-        # Compute and append statistical features of the channel
-        features = [
-            np.mean(channel),
-            np.std(channel),
-            np.median(channel),
-            *np.percentile(channel, [25, 75])  # Add 25th and 75th percentiles
-        ]
-        color_features.extend(features)
+def preprocess_and_extract_features(img):
+    img = cv2.resize(img, (128, 128))  # Resize the image to match training data
 
-    return np.array([color_features])
+    # Convert image to grayscale for LBP
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    lbp = local_binary_pattern(gray, P=24, R=3, method='uniform')
+    lbp_hist, _ = np.histogram(lbp, bins=np.arange(27), range=(0, 26))
+    lbp_hist = lbp_hist.astype("float")
+    lbp_hist /= (lbp_hist.sum() + 1e-6)  # Normalize histogram
+
+    # Convert image to HSV for color histograms
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    hist_h = cv2.calcHist([hsv], [0], None, [256], [0, 256])
+    hist_s = cv2.calcHist([hsv], [1], None, [256], [0, 256])
+    hist_v = cv2.calcHist([hsv], [2], None, [256], [0, 256])
+    hist_h = cv2.normalize(hist_h, hist_h).flatten()
+    hist_s = cv2.normalize(hist_s, hist_s).flatten()
+    hist_v = cv2.normalize(hist_v, hist_v).flatten()
+
+    # Concatenate all features
+    feature_vector = np.hstack((lbp_hist, hist_h, hist_s, hist_v))
+    return feature_vector
+
 
 def predict_image(request):
     if request.method == 'POST':
         image_file = request.FILES.get('image')
-
         if image_file:
             img_array = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
             img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert to RGB
 
-            preprocessed_img = preprocess(img)
-            image_features = extract_color_features(preprocessed_img)
+            features = preprocess_and_extract_features(img)
+            features_scaled = scaler.transform([features])
 
-            probabilities = model.predict_proba(image_features)[0]
-            predicted_label_index = np.argmax(probabilities)
-            predicted_label = CATEGORIES[predicted_label_index]
-            accuracy = probabilities[predicted_label_index]
+            probabilities = model.predict_proba(features_scaled)[0]  # Get probability estimates
 
-            _, buffer = cv2.imencode('.jpg', cv2.cvtColor(img, cv2.COLOR_RGB2BGR))  # Convert back to BGR for encoding
+            # Assuming class 0 is "Healthy", class 1 is "Phomopsis"
+            healthy_prob = probabilities[0]
+            infected_prob = probabilities[1]
+
+            # Set a threshold for detection confidence
+            threshold = 0.8  # Adjust based on validation results
+
+            if max(healthy_prob, infected_prob) < threshold:
+                predicted_label = 'No matching images found'
+                accuracy = 'N/A'
+            else:
+                prediction = np.argmax(probabilities)
+                predicted_label = "Healthy" if prediction == 0 else "Phomopsis"
+                accuracy = max(healthy_prob, infected_prob)
+
+            _, buffer = cv2.imencode('.jpg', img)
             encoded_image = base64.b64encode(buffer).decode('utf-8')
             image_data = f'data:image/jpeg;base64,{encoded_image}'
         else:
